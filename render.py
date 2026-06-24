@@ -38,7 +38,7 @@ def generate_custom_path(scene, num_frames=300):
     # 1. Select Keyframes
     # Let's automatically pick 5 evenly spaced cameras to act as our path anchors.
     # Alternatively, you can manually select specific camera indices you like.
-    num_keyframes = 5
+    num_keyframes = 2
     step = len(train_cams) // num_keyframes
     print("step", step)
     keyframe_cams = [
@@ -233,7 +233,7 @@ def render_sets(
         if not skip_video:
             # --- ADD YOUR CUSTOM RENDER BLOCK HERE ---
             print("Generating custom Slerp trajectory...")
-            custom_path = generate_custom_path(scene, num_frames=100)
+            custom_path = generate_custom_path(scene, num_frames=300)
 
             # We pass "custom_video" as the name so it creates a separate folder
             render_set(

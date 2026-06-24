@@ -25,6 +25,86 @@ from gaussian_renderer import GaussianModel
 from time import time
 import threading
 import concurrent.futures
+import copy
+from scipy.spatial.transform import Rotation as R_scipy
+from scipy.spatial.transform import Slerp
+from scipy.interpolate import CubicSpline
+
+def generate_custom_path(scene, num_frames=300):
+    train_cams = scene.getTrainCameras()
+
+    # 1. Select Keyframes
+    # Let's automatically pick 5 evenly spaced cameras to act as our path anchors.
+    # Alternatively, you can manually select specific camera indices you like.
+    num_keyframes = 5
+    step = len(train_cams) // num_keyframes
+    print("step", step)
+    keyframe_cams = [train_cams[min(i * step, len(train_cams)-1)] for i in range(num_keyframes)]
+
+    # We map these keyframes to specific "times" along our path (0.0 to 1.0)
+    key_times = np.linspace(0.0, 1.0, len(keyframe_cams))
+    print("AAAAAAAAA", key_times)
+
+    Rs = []
+    Ts = []
+    Centers = []
+    is_dict = isinstance(keyframe_cams[0], dict)
+
+    # 2. Extract Data from all Keyframes
+    for cam in keyframe_cams:
+        R = cam['R'] if is_dict else cam.R
+        T = cam['T'] if is_dict else cam.T
+
+        Rs.append(R)
+        Ts.append(T)
+        # Calculate World Center: C = -R^T * T
+        Centers.append(-np.dot(R.T, T))
+
+    print("BBBBBBB", Centers)
+
+    # 3. Set up multi-point Interpolators
+    # Slerp natively accepts an array of times and a sequence of Rotations
+    slerp_operator = Slerp(key_times, R_scipy.from_matrix(Rs))
+
+    # CubicSpline creates a smooth curved 3D path through our World Centers
+    spline_operator = CubicSpline(key_times, Centers, bc_type='natural')
+
+    custom_cameras = []
+    cam_template = keyframe_cams[0] # Use the first camera as our blueprint
+
+    for i in range(num_frames):
+        progress = i / float(num_frames - 1)
+
+        # Interpolate Rotation and Position for the current frame
+        r_interp = slerp_operator(progress).as_matrix()
+        pos_interp = spline_operator(progress)
+
+        # Convert interpolated World Center back to Translation vector: T = -R * C
+        t_interp = -np.dot(r_interp, pos_interp)
+
+        # Deepcopy to safely preserve intrinsics (FoV, image dims, etc.)
+        new_cam = copy.deepcopy(cam_template)
+
+        print("DDDDDDIIIIIIIIIICCCCCCC", is_dict, dir(new_cam))
+        exit(1)
+        if is_dict:
+            new_cam['R'] = r_interp
+            new_cam['T'] = t_interp
+            # 4D Time variable handling
+            if 'timestamp' in new_cam: new_cam['timestamp'] = progress
+            if 'time' in new_cam: new_cam['time'] = progress
+        else:
+            new_cam.R = r_interp
+            new_cam.T = t_interp
+            # 4D Time variable handling
+            if hasattr(new_cam, 'timestamp'): new_cam.timestamp = progress
+            if hasattr(new_cam, 'time'): new_cam.time = progress
+            if hasattr(new_cam, 'fid'): new_cam.fid = progress
+
+        custom_cameras.append(new_cam)
+
+    return custom_cameras
+
 def multithread_write(image_list, path):
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=None)
     def write_image(image, count, path):
@@ -89,7 +169,22 @@ def render_sets(dataset : ModelParams, hyperparam, iteration : int, pipeline : P
         if not skip_test:
             render_set(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, pipeline, background,cam_type)
         if not skip_video:
-            render_set(dataset.model_path,"video",scene.loaded_iter,scene.getVideoCameras(),gaussians,pipeline,background,cam_type)
+            # --- ADD YOUR CUSTOM RENDER BLOCK HERE ---
+            print("Generating custom Slerp trajectory...")
+            custom_path = generate_custom_path(scene, num_frames=100)
+
+            # We pass "custom_video" as the name so it creates a separate folder
+            render_set(
+                dataset.model_path,
+                "custom_video",
+                scene.loaded_iter,
+                custom_path,
+                gaussians,
+                pipeline,
+                background,
+                cam_type
+            )
+            #render_set(dataset.model_path,"video",scene.loaded_iter,scene.getVideoCameras(),gaussians,pipeline,background,cam_type)
 if __name__ == "__main__":
     # Set up command line argument parser
     parser = ArgumentParser(description="Testing script parameters")

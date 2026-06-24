@@ -97,10 +97,9 @@ def generate_custom_path(scene, num_frames=300):
         else:
             # For actual Camera objects, we MUST instantiate a new one
             # so the W2C and Projection tensors are recalculated.
-
-            # Safely grab the current time variable (different forks use different names)
             current_time = progress
 
+            # 1. Initialize with ONLY standard 3DGS arguments
             new_cam = Camera(
                 colmap_id=cam_template.colmap_id,
                 R=r_interp,
@@ -112,15 +111,12 @@ def generate_custom_path(scene, num_frames=300):
                 image_name=f"custom_frame_{i}",
                 uid=i,
                 data_device=cam_template.data_device,
-                # Try passing standard 4DGS time variables natively
-                timestamp=current_time,
             )
 
-            # Brute-force update other time attributes just in case
-            if hasattr(cam_template, "time"):
-                new_cam.time = current_time
-            if hasattr(cam_template, "fid"):
-                new_cam.fid = current_time
+            # 2. Dynamically attach the 4D time variables AFTER initialization
+            new_cam.timestamp = current_time
+            new_cam.time = current_time
+            new_cam.fid = current_time
 
             custom_cameras.append(new_cam)
 

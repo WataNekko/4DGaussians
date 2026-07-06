@@ -44,24 +44,37 @@ def generate_custom_path(scene, num_frames=300):
     keyframe_cams = [
         train_cams[min(i * step, len(train_cams) - 1)] for i in range(num_keyframes)
     ]
+    #keyframe_cams = [train_cams[i] for i in [3]]
 
-    # We map these keyframes to specific "times" along our path (0.0 to 1.0)
-    key_times = np.linspace(0.0, 1.0, len(keyframe_cams))
-
-    Rs = []
-    Ts = []
-    Centers = []
     is_dict = isinstance(keyframe_cams[0], dict)
+    custom_cameras = []
+    cam_template = keyframe_cams[0]
 
-    # 2. Extract Data from all Keyframes
-    for cam in keyframe_cams:
-        R = cam["R"] if is_dict else cam.R
-        T = cam["T"] if is_dict else cam.T
+    # --- Handle single keyframe case ---
+    if len(keyframe_cams) == 1:
+        print("Single keyframe detected, returning static camera path.")
+        for i in range(num_frames):
+            progress = i / float(num_frames - 1)
 
-        Rs.append(R)
-        Ts.append(T)
-        # Calculate World Center: C = -R^T * T
-        Centers.append(-np.dot(R.T, T))
+            if is_dict:
+                new_cam = copy.deepcopy(cam_template)
+                # Ensure time progresses even if camera is static
+                for key in ["timestamp", "time", "fid"]:
+                    if key in new_cam: new_cam[key] = progress
+                custom_cameras.append(new_cam)
+            else:
+                new_cam = copy.deepcopy(cam_template) # Copying the existing object
+                new_cam.timestamp = progress
+                new_cam.time = progress
+                new_cam.fid = progress
+                custom_cameras.append(new_cam)
+        return custom_cameras
+
+    # --- Handle multi-keyframe path ---
+    key_times = np.linspace(0.0, 1.0, len(keyframe_cams))
+    Rs = [cam["R"] if is_dict else cam.R for cam in keyframe_cams]
+    Ts = [cam["T"] if is_dict else cam.T for cam in keyframe_cams]
+    Centers = [-np.dot(R.T, T) for R, T in zip(Rs, Ts)]
 
     # 3. Set up multi-point Interpolators
     # Slerp natively accepts an array of times and a sequence of Rotations
@@ -119,8 +132,6 @@ def generate_custom_path(scene, num_frames=300):
             new_cam.fid = current_time
 
             custom_cameras.append(new_cam)
-
-    return custom_cameras
 
     return custom_cameras
 

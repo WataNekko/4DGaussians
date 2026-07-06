@@ -35,17 +35,21 @@ def main():
     points_txt.write("# 3D point list with one line of data per point:\n")
     points_txt.write("# POINT3D_ID, X, Y, Z, R, G, B, ERROR, TRACK[] as (IMAGE_ID, POINT2D_IDX)\n")
 
+    # The JSON values are raw Bayer.
+    # We must first scale by 2 to reach the RGB baseline, then apply the user's RGB downscale factor.
+    bayer_factor = 2.0
+    total_scale = bayer_factor * args.scale
+
     for cam_idx, cam_data in enumerate(cameras_list, start=1):
-        # 1. Intrinsics Extraction (Scaled)
-        scale = args.scale
-        w = int(cam_data['intrinsics']['resolution'][0] / scale)
-        h = int(cam_data['intrinsics']['resolution'][1] / scale)
+        # 1. Intrinsics Extraction (Scaled for Debayering + RGB Downscaling)
+        w = int(cam_data['intrinsics']['resolution'][0] / total_scale)
+        h = int(cam_data['intrinsics']['resolution'][1] / total_scale)
 
         cam_matrix = cam_data['intrinsics']['camera_matrix']
-        fx = cam_matrix[0] / scale
-        fy = cam_matrix[4] / scale
-        cx = cam_matrix[2] / scale
-        cy = cam_matrix[5] / scale
+        fx = cam_matrix[0] / total_scale
+        fy = cam_matrix[4] / total_scale
+        cx = cam_matrix[2] / total_scale
+        cy = cam_matrix[5] / total_scale
 
         # Grab the first 4 distortion coefficients (k1, k2, p1, p2)
         dist = cam_data['intrinsics']['distortion_coefficients']

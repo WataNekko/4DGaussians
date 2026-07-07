@@ -2,7 +2,7 @@
 
 workdir=$1
 
-python convert_calib.py "${@:2}" -o ./colmap_tmp/txt -r || exit 2
+python convert_calib.py "${@:2}" -o ./colmap_tmp/txt || exit 2
 
 mkdir -p ./colmap_tmp/sparse/0
 colmap model_converter --input_path ./colmap_tmp/txt --output_path ./colmap_tmp/sparse/0 --output_type BIN

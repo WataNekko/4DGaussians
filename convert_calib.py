@@ -1,16 +1,18 @@
 import os
 import json
 import argparse
+import sqlite3
+import re
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
 def main():
     parser = argparse.ArgumentParser(description="Convert Dome Calibration JSON to COLMAP format.")
     parser.add_argument("-i", "--json", type=str, required=True, help="Path to calibration_dome.json")
-    parser.add_argument("-o", "--output", type=str, required=True, help="Path to output sparse/0/ directory")
-    parser.add_argument("-s", "--scale", type=int, default=1, help="Downscale factor (e.g., 2, 4, 8)")
-    parser.add_argument("-r", "--randomize_points", action="store_true", help="Generate random points. Omit to leave empty for COLMAP triangulation.")
-    parser.add_argument("-n", "--num_points", type=int, default=100000, help="Number of random points if --randomize_points is set.")
+    parser.add_argument("-o", "--output", type=str, required=True, help="Path to output directory")
+    parser.add_argument("-s", "--scale", type=float, default=1.0, help="RGB Downscale factor (e.g., 4)")
+    parser.add_argument("--db", type=str, help="Path to database.db for COLMAP triangulation pipeline. Omit to generate random points")
+    parser.add_argument("-n", "--num_points", type=int, default=100000, help="Number of random points (Only used if --db is omitted).")
     args = parser.parse_args()
 
     os.makedirs(args.output, exist_ok=True)
@@ -18,8 +20,27 @@ def main():
     with open(args.json, 'r') as f:
         calib = json.load(f)
 
-    # Sort cameras alphabetically by camera_id (C0000, C0001, etc.) to ensure strict 1-indexed routing
-    cameras_list = sorted(calib['cameras'], key=lambda x: x['camera_id'])
+    # Map JSON cameras by their internal camera_id (1 to 35)
+    json_cams = {i: c for i, c in enumerate(sorted(calib['cameras'], key=lambda cam: cam['camera_id']), 1)}
+
+    # --- WORKFLOW ROUTING ---
+    if args.db:
+        # Triangulation Workflow
+        conn = sqlite3.connect(args.db)
+        cursor = conn.cursor()
+        # Grab exactly how COLMAP mapped the files to IDs
+        cursor.execute("SELECT image_id, camera_id, name FROM images")
+        db_images = cursor.fetchall()
+        conn.close()
+        print(f"Workflow: Triangulation | Synced {len(db_images)} images from SQLite database.")
+        generate_points = False
+    else:
+        # Random Points Workflow
+        image_names = [f"image{i}.jpg" for i in json_cams.keys()]
+        db_images = [(idx, idx, name) for idx, name in enumerate(sorted(image_names), start=1)]
+        print("Workflow: Random Points | Generated safe alphabetical IDs.")
+        generate_points = True
+    # ------------------------
 
     cameras_txt = open(os.path.join(args.output, "cameras.txt"), "w")
     images_txt = open(os.path.join(args.output, "images.txt"), "w")
@@ -40,23 +61,38 @@ def main():
     bayer_factor = 2.0
     total_scale = bayer_factor * args.scale
 
-    for cam_idx, cam_data in enumerate(cameras_list, start=1):
-        # 1. Intrinsics Extraction (Scaled for Debayering + RGB Downscaling)
-        w = int(cam_data['intrinsics']['resolution'][0] / total_scale)
-        h = int(cam_data['intrinsics']['resolution'][1] / total_scale)
+    written_cameras = set()
 
-        cam_matrix = cam_data['intrinsics']['camera_matrix']
-        fx = cam_matrix[0] / total_scale
-        fy = cam_matrix[4] / total_scale
-        cx = cam_matrix[2] / total_scale
-        cy = cam_matrix[5] / total_scale
-
-        # Grab the first 4 distortion coefficients (k1, k2, p1, p2)
-        dist = cam_data['intrinsics']['distortion_coefficients']
-        k1, k2, p1, p2 = dist[0], dist[1], dist[2], dist[3]
-
-        cameras_txt.write(f"{cam_idx} OPENCV {w} {h} {fx} {fy} {cx} {cy} {k1} {k2} {p1} {p2}\n")
+    for image_id, camera_id, name in db_images:
+        # Extract the raw number from the filename (e.g., "image10.jpg" -> 10)
+        match = re.search(r'\d+', name)
+        if not match:
+            continue
         
+        json_idx = int(match.group())
+        if json_idx not in json_cams:
+            continue
+            
+        cam_data = json_cams[json_idx]
+
+        # 1. Intrinsics Extraction (Scaled for Debayering + RGB Downscaling)
+        if camera_id not in written_cameras:
+            w = int(cam_data['intrinsics']['resolution'][0] / total_scale)
+            h = int(cam_data['intrinsics']['resolution'][1] / total_scale)
+            
+            cam_matrix = cam_data['intrinsics']['camera_matrix']
+            fx = cam_matrix[0] / total_scale
+            fy = cam_matrix[4] / total_scale
+            cx = cam_matrix[2] / total_scale
+            cy = cam_matrix[5] / total_scale
+            
+            # Grab the first 4 distortion coefficients (k1, k2, p1, p2)
+            dist = cam_data['intrinsics']['distortion_coefficients']
+            k1, k2, p1, p2 = dist[0], dist[1], dist[2], dist[3]
+            
+            cameras_txt.write(f"{camera_id} OPENCV {w} {h} {fx} {fy} {cx} {cy} {k1} {k2} {p1} {p2}\n")
+            written_cameras.add(camera_id)
+
         # 2. Extrinsics Extraction
         # Reshape the flat 16-element view matrix into a 4x4 NumPy array
         view_mat = np.array(cam_data['extrinsics']['view_matrix']).reshape(4, 4)
@@ -67,13 +103,10 @@ def main():
         quat = R.from_matrix(rot_mat).as_quat()
         qw, qx, qy, qz = quat[3], quat[0], quat[1], quat[2]
         
-        # Assumes multipleviewprogress.sh extracts frames as image1.jpg, image2.jpg...
-        image_name = f"image{cam_idx}.jpg"
-        
-        images_txt.write(f"{cam_idx} {qw} {qx} {qy} {qz} {t_vec[0]} {t_vec[1]} {t_vec[2]} {cam_idx} {image_name}\n\n")
+        images_txt.write(f"{image_id} {qw} {qx} {qy} {qz} {t_vec[0]} {t_vec[1]} {t_vec[2]} {camera_id} {name}\n\n")
 
     # 3. Point Cloud Logic
-    if args.randomize_points:
+    if generate_points:
         print(f"Generating {args.num_points} random initialization points...")
         # Since C0004 is the origin, we shift the random points +2.5m along the Z-axis 
         # so they initialize in front of the camera lenses, not behind them.
@@ -86,6 +119,7 @@ def main():
         print("Random points populated.")
     else:
         print("Skipping point randomization. points3D.txt left empty for COLMAP triangulation.")
+        print(f"Parsed {len(db_images)} images directly from SQLite database.")
 
     cameras_txt.close()
     images_txt.close()

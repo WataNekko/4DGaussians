@@ -44,7 +44,10 @@ def generate_custom_path(scene, num_frames=300):
     keyframe_cams = [
         train_cams[min(i * step, len(train_cams) - 1)] for i in range(num_keyframes)
     ]
-    #keyframe_cams = [train_cams[i] for i in [3]]
+    num_cams = 35
+    frames_per_cam = len(train_cams) // num_cams
+    keyframe_cams = [train_cams[i*frames_per_cam] for i in [4,16]]
+    # image16 - image17 looks good
 
     is_dict = isinstance(keyframe_cams[0], dict)
     custom_cameras = []
@@ -210,6 +213,7 @@ def render_sets(
     skip_train: bool,
     skip_test: bool,
     skip_video: bool,
+    skip_custom: bool,
 ):
     with torch.no_grad():
         gaussians = GaussianModel(dataset.sh_degree, hyperparam)
@@ -242,6 +246,8 @@ def render_sets(
                 cam_type,
             )
         if not skip_video:
+            render_set(dataset.model_path,"video",scene.loaded_iter,scene.getVideoCameras(),gaussians,pipeline,background,cam_type)
+        if not skip_custom:
             # --- ADD YOUR CUSTOM RENDER BLOCK HERE ---
             print("Generating custom Slerp trajectory...")
             custom_path = generate_custom_path(scene, num_frames=300)
@@ -257,7 +263,6 @@ def render_sets(
                 background,
                 cam_type,
             )
-            # render_set(dataset.model_path,"video",scene.loaded_iter,scene.getVideoCameras(),gaussians,pipeline,background,cam_type)
 
 
 if __name__ == "__main__":
@@ -271,6 +276,7 @@ if __name__ == "__main__":
     parser.add_argument("--skip_test", action="store_true")
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--skip_video", action="store_true")
+    parser.add_argument("--skip_custom", action="store_true")
     parser.add_argument("--configs", type=str)
     args = get_combined_args(parser)
     print("Rendering ", args.model_path)
@@ -291,4 +297,5 @@ if __name__ == "__main__":
         args.skip_train,
         args.skip_test,
         args.skip_video,
+        args.skip_custom,
     )

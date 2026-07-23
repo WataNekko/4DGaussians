@@ -417,7 +417,14 @@ class GaussianModel:
         self._deformation_accum = torch.zeros((self.get_xyz.shape[0], 3), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
-        self.visibility_count = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+        # NOTE: unlike the buffers above, visibility_count must NOT be wiped to zero
+        # for the whole cloud here -- its prune() check is "too little evidence -> prune",
+        # so zeroing everyone would flag every existing point as low-confidence the
+        # instant densify() and prune() land on the same iteration (which happens
+        # whenever densification_interval == pruning_interval, the default). Only the
+        # newly added points should start at zero; existing points keep their count.
+        new_visibility_count = torch.zeros((new_xyz.shape[0], 1), device="cuda")
+        self.visibility_count = torch.cat([self.visibility_count, new_visibility_count], dim=0)
 
     def densify_and_split(self, grads, grad_threshold, scene_extent, N=2):
         n_init_points = self.get_xyz.shape[0]

@@ -216,9 +216,9 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             # tv_loss = 0
             tv_loss = gaussians.compute_regulation(hyper.time_smoothness_weight, hyper.l1_time_planes, hyper.plane_tv_weight)
             loss += tv_loss
-        if stage == "fine" and opt.traj_smooth_weight != 0:
-            traj_loss = gaussians.compute_trajectory_smoothness_loss(opt.traj_smooth_dt, sample_size=opt.traj_smooth_sample_size)
-            loss += opt.traj_smooth_weight * traj_loss
+        if stage == "fine" and hyper.traj_smooth_weight != 0:
+            traj_loss = gaussians.compute_trajectory_smoothness_loss(hyper.traj_smooth_dt, sample_size=hyper.traj_smooth_sample_size)
+            loss += hyper.traj_smooth_weight * traj_loss
         if opt.lambda_dssim != 0:
             ssim_loss = ssim(image_tensor,gt_image_tensor)
             loss += opt.lambda_dssim * (1.0-ssim_loss)

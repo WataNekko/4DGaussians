@@ -167,6 +167,11 @@ class GaussianModel:
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self._deformation_accum = torch.zeros((self.get_xyz.shape[0],3),device="cuda")
+        # Confidence-aware pruning: counts how many distinct training views saw this
+        # Gaussian since the counter was last reset (reset happens in prune(), so this
+        # is a "visibility during the last pruning_interval" window, comparable across
+        # points regardless of when they were created).
+        self.visibility_count = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         
 
         l = [
@@ -361,6 +366,7 @@ class GaussianModel:
         self._deformation_accum = self._deformation_accum[valid_points_mask]
         self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
         self._deformation_table = self._deformation_table[valid_points_mask]
+        self.visibility_count = self.visibility_count[valid_points_mask]
         self.denom = self.denom[valid_points_mask]
         self.max_radii2D = self.max_radii2D[valid_points_mask]
 
@@ -411,6 +417,7 @@ class GaussianModel:
         self._deformation_accum = torch.zeros((self.get_xyz.shape[0], 3), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+        self.visibility_count = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
 
     def densify_and_split(self, grads, grad_threshold, scene_extent, N=2):
         n_init_points = self.get_xyz.shape[0]
@@ -486,7 +493,102 @@ class GaussianModel:
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_deformation_table)
         return selected_xyz, new_xyz
 
-    def prune(self, max_grad, min_opacity, extent, max_screen_size):
+    def add_points_from_residual(self, new_xyz, new_colors):
+        """
+        Residual-guided densification: inject brand-new Gaussians directly at 3D
+        locations unprojected from currently high-photometric-error pixels (see
+        utils.graphics_utils.unproject_pixels), instead of only cloning/splitting
+        existing Gaussians based on their own screen-space gradient. This targets
+        exactly the regions the model is currently failing to reconstruct, rather
+        than proxying for that via gradient magnitude or accumulated motion.
+
+        new_xyz: (N, 3) world-space positions.
+        new_colors: (N, 3) RGB in [0, 1], sampled from the GT image at those pixels.
+        """
+        if new_xyz.shape[0] == 0:
+            return
+        N = new_xyz.shape[0]
+
+        with torch.no_grad():
+            # Nearest-neighbor distance to the EXISTING cloud sets a sensible initial
+            # scale (mirrors create_from_pcd's use of distCUDA2, but distCUDA2 only
+            # does self-nearest-neighbor within one set, so we need a cross-set query
+            # here since these points don't exist yet). For very large point clouds
+            # (>~200k), chunk this cdist or subsample self.get_xyz first -- a full
+            # (N, M) matrix against 300k+ points can get memory-heavy.
+            existing_xyz = self.get_xyz.detach()
+            nn_dist = torch.cdist(new_xyz, existing_xyz).min(dim=1).values
+            nn_dist = torch.clamp_min(nn_dist, 1e-4)
+
+        new_scaling = self.scaling_inverse_activation(nn_dist)[..., None].repeat(1, 3)
+        new_rotation = torch.zeros((N, 4), device="cuda")
+        new_rotation[:, 0] = 1.0
+        new_opacity = self.inverse_opacity_activation(0.1 * torch.ones((N, 1), device="cuda"))
+
+        fused_color = RGB2SH(new_colors)
+        features = torch.zeros((N, 3, (self.max_sh_degree + 1) ** 2), device="cuda")
+        features[:, :3, 0] = fused_color
+        new_features_dc = features[:, :, 0:1].transpose(1, 2).contiguous()
+        new_features_rest = features[:, :, 1:].transpose(1, 2).contiguous()
+
+        # New points participate in the deformation field by default -- they were
+        # spawned because the model is currently wrong there, which in the fine
+        # stage is usually because something is moving through that region.
+        new_deformation_table = torch.ones((N,), device="cuda", dtype=torch.bool)
+
+        self.densification_postfix(new_xyz, new_features_dc, new_features_rest,
+                                    new_opacity, new_scaling, new_rotation, new_deformation_table)
+
+    def add_visibility_stats(self, visibility_filter):
+        # Call this every training iteration (unconditionally, not just during the
+        # densify_until_iter window) so confidence is measured over the same window
+        # that prune() resets.
+        self.visibility_count[visibility_filter] += 1
+
+    def compute_trajectory_smoothness_loss(self, dt, sample_size=None):
+        """
+        Temporal smoothness loss done at the trajectory level, not the pixel level.
+        Penalizes the ACCELERATION (second time-derivative) of each dynamic
+        Gaussian's deformed position -- smooth, genuine motion has near-zero
+        acceleration and is barely penalized, while jittery/inconsistent motion
+        (the kind that causes flicker/floater artifacts) has high acceleration and
+        gets pushed down. This is deliberately different from penalizing
+        render(t) vs render(t+dt) directly, which would also penalize real motion
+        and tends to just blur the reconstruction.
+        """
+        dynamic_idx = self._deformation_table.nonzero(as_tuple=True)[0]
+        if dynamic_idx.shape[0] == 0:
+            return torch.zeros((), device="cuda")
+
+        if sample_size is not None and dynamic_idx.shape[0] > sample_size:
+            perm = torch.randperm(dynamic_idx.shape[0], device=dynamic_idx.device)[:sample_size]
+            dynamic_idx = dynamic_idx[perm]
+
+        means3D = self.get_xyz[dynamic_idx]
+        scales = self._scaling[dynamic_idx]
+        rotations = self._rotation[dynamic_idx]
+        opacity = self._opacity[dynamic_idx]
+        shs = self.get_features[dynamic_idx]
+        N = means3D.shape[0]
+
+        # One random reference time per call, clamped so t-dt/t+dt stay in [0,1].
+        # Trajectory smoothness is a property of the whole deformation field, not
+        # tied to whichever camera/frame happened to be sampled this iteration.
+        t = float(torch.rand(1).item()) * (1.0 - 2 * dt) + dt
+
+        def deform_pos(time_val):
+            time_tensor = torch.full((N, 1), time_val, device="cuda")
+            pos, _, _, _, _ = self._deformation(means3D, scales, rotations, opacity, shs, time_tensor)
+            return pos
+
+        pos_prev = deform_pos(t - dt)
+        pos_curr = deform_pos(t)
+        pos_next = deform_pos(t + dt)
+
+        acceleration = (pos_next - pos_curr) - (pos_curr - pos_prev)
+        return (acceleration ** 2).sum(dim=-1).mean()
+
+    def prune(self, max_grad, min_opacity, extent, max_screen_size, min_visibility_count=None):
         prune_mask = (self.get_opacity < min_opacity).squeeze()
 
         if max_screen_size:
@@ -495,7 +597,20 @@ class GaussianModel:
             prune_mask = torch.logical_or(prune_mask, big_points_vs)
 
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
+
+        if min_visibility_count is not None:
+            # Confidence-aware pruning: a point that opacity/screen-size checks let
+            # through, but that was seen by very few distinct training views in the
+            # last pruning window, is almost certainly a floater that got planted by
+            # gradient-based densification without enough multi-view constraint.
+            low_confidence_mask = self.visibility_count.squeeze(-1) < min_visibility_count
+            prune_mask = torch.logical_or(prune_mask, low_confidence_mask)
+
         self.prune_points(prune_mask)
+        # Reset the visibility window so the next pruning_interval starts fresh --
+        # otherwise older points would look "more confident" just by having existed
+        # longer, rather than by being genuinely well-constrained.
+        self.visibility_count = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
 
         torch.cuda.empty_cache()
     def densify(self, max_grad, min_opacity, extent, max_screen_size, density_threshold, displacement_scale, model_path=None, iteration=None, stage=None):

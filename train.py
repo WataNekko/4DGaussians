@@ -28,6 +28,7 @@ from utils.timer import Timer
 from utils.loader_utils import FineSampler, get_stamp_list
 import lpips
 from utils.scene_utils import render_training_image
+from utils.graphics_utils import unproject_pixels
 from time import time
 import copy
 
@@ -177,6 +178,8 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
         radii_list = []
         visibility_filter_list = []
         viewspace_point_tensor_list = []
+        depths = []
+        cams_used = []
         for viewpoint_cam in viewpoint_cams:
             render_pkg = render(viewpoint_cam, gaussians, pipe, background, stage=stage,cam_type=scene.dataset_type)
             image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
@@ -190,6 +193,10 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             radii_list.append(radii.unsqueeze(0))
             visibility_filter_list.append(visibility_filter.unsqueeze(0))
             viewspace_point_tensor_list.append(viewspace_point_tensor)
+            # Kept for residual-guided densification below -- depth is otherwise unused
+            # in the base pipeline, we just need it periodically, not every iteration.
+            depths.append(render_pkg["depth"])
+            cams_used.append(viewpoint_cam)
         
 
         radii = torch.cat(radii_list,0).max(dim=0).values
@@ -209,6 +216,9 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             # tv_loss = 0
             tv_loss = gaussians.compute_regulation(hyper.time_smoothness_weight, hyper.l1_time_planes, hyper.plane_tv_weight)
             loss += tv_loss
+        if stage == "fine" and opt.traj_smooth_weight != 0:
+            traj_loss = gaussians.compute_trajectory_smoothness_loss(opt.traj_smooth_dt, sample_size=opt.traj_smooth_sample_size)
+            loss += opt.traj_smooth_weight * traj_loss
         if opt.lambda_dssim != 0:
             ssim_loss = ssim(image_tensor,gt_image_tensor)
             loss += opt.lambda_dssim * (1.0-ssim_loss)
@@ -226,6 +236,11 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
         iter_end.record()
 
         with torch.no_grad():
+            # Confidence-aware pruning bookkeeping: track visibility every iteration
+            # (not just during the densify_until_iter window) so the window that
+            # prune() resets always has fresh data to judge from.
+            gaussians.add_visibility_stats(visibility_filter)
+
             # Progress bar
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
             ema_psnr_for_log = 0.4 * psnr_ + 0.6 * ema_psnr_for_log
@@ -271,10 +286,42 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
                     
                     gaussians.densify(densify_threshold, opacity_threshold, scene.cameras_extent, size_threshold, 5, 5, scene.model_path, iteration, stage)
+
+                if stage == "fine" and opt.residual_densify and iteration % opt.densification_interval == 0:
+                    with torch.no_grad():
+                        # Use the first camera in this batch as the residual-guided
+                        # densification source view for this event.
+                        ref_image = image_tensor[0]        # (3, H, W) rendered
+                        ref_gt = gt_image_tensor[0, :3]     # (3, H, W) ground truth
+                        ref_depth = depths[0].squeeze(0)    # (H, W) camera-space depth
+                        ref_cam = cams_used[0]
+
+                        error_map = (ref_image - ref_gt).abs().mean(dim=0)  # (H, W)
+                        H_, W_ = error_map.shape
+                        k = max(1, min(opt.residual_densify_max_points, int(opt.residual_densify_topk * H_ * W_)))
+                        flat_error = error_map.flatten()
+                        _, topk_idx = torch.topk(flat_error, k)
+                        v_coords = (topk_idx // W_).float()
+                        u_coords = (topk_idx % W_).float()
+                        pixel_uv = torch.stack([u_coords, v_coords], dim=1)
+                        pixel_depth = ref_depth.flatten()[topk_idx]
+
+                        # Skip pixels where nothing was rasterized (depth ~ 0/background)
+                        # -- unprojecting those would place points at nonsense locations.
+                        valid = pixel_depth > 1e-3
+                        pixel_uv = pixel_uv[valid]
+                        pixel_depth = pixel_depth[valid]
+                        topk_idx_valid = topk_idx[valid]
+
+                        if pixel_uv.shape[0] > 0 and gaussians.get_xyz.shape[0] < 360000:
+                            new_xyz = unproject_pixels(ref_cam, pixel_uv, pixel_depth)
+                            new_colors = ref_gt.permute(1, 2, 0).reshape(-1, 3)[topk_idx_valid]
+                            gaussians.add_points_from_residual(new_xyz, new_colors)
+
                 if  iteration > opt.pruning_from_iter and iteration % opt.pruning_interval == 0 and gaussians.get_xyz.shape[0]>200000:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
-
-                    gaussians.prune(densify_threshold, opacity_threshold, scene.cameras_extent, size_threshold)
+                    min_vis = opt.min_visibility_count if opt.min_visibility_count > 0 else None
+                    gaussians.prune(densify_threshold, opacity_threshold, scene.cameras_extent, size_threshold, min_vis)
                     
                 # if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0 :
                 if iteration % opt.densification_interval == 0 and gaussians.get_xyz.shape[0]<360000 and opt.add_point:

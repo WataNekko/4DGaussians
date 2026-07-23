@@ -76,6 +76,43 @@ def fov2focal(fov, pixels):
 def focal2fov(focal, pixels):
     return 2*math.atan(pixels/(2*focal))
 
+def unproject_pixels(camera, pixel_uv, depth):
+    """
+    Unproject 2D pixel coordinates + per-pixel depth into 3D world-space points,
+    for residual-guided densification.
+
+    camera: a scene.cameras.Camera (must have world_view_transform, FoVx, FoVy,
+            image_width, image_height -- exactly what render() already uses).
+    pixel_uv: (N, 2) tensor of (u, v) pixel coordinates (u = column/x, v = row/y),
+              same convention as the rendered image tensor's (W, H) axes.
+    depth: (N,) tensor of camera-space depth (z along the optical axis) at those
+           pixels -- this is exactly what render_pkg["depth"] gives you per-pixel.
+
+    Returns: (N, 3) tensor of world-space xyz.
+
+    NOTE: assumes a centered principal point (cx = W/2, cy = H/2), matching how
+    this repo builds its projection matrix. If your COLMAP intrinsics have a
+    non-centered principal point, pull cx/cy from cam_intrinsics instead.
+    """
+    device = depth.device
+    W, H = camera.image_width, camera.image_height
+    fx = fov2focal(camera.FoVx, W)
+    fy = fov2focal(camera.FoVy, H)
+    cx, cy = W / 2.0, H / 2.0
+
+    u = pixel_uv[:, 0].float()
+    v = pixel_uv[:, 1].float()
+    x_cam = (u - cx) * depth / fx
+    y_cam = (v - cy) * depth / fy
+    z_cam = depth
+
+    points_cam_hom = torch.stack([x_cam, y_cam, z_cam, torch.ones_like(z_cam)], dim=1)  # (N, 4)
+    world_view_transform = camera.world_view_transform.to(device)
+    cam_to_world = torch.inverse(world_view_transform)
+    points_world_hom = points_cam_hom @ cam_to_world  # row-vector convention, matches render()
+    points_world = points_world_hom[:, :3] / points_world_hom[:, 3:4].clamp_min(1e-8)
+    return points_world
+
 def apply_rotation(q1, q2):
     """
     Applies a rotation to a quaternion.

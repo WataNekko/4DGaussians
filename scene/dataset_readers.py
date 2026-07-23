@@ -593,15 +593,21 @@ def readPanopticSportsinfos(datadir):
                            )
     return scene_info
 
-def readMultipleViewinfos(datadir,llffhold=8):
+def readMultipleViewinfos(datadir,llffhold=8,held_out_cams=""):
 
     cameras_extrinsic_file = os.path.join(datadir, "sparse_/images.bin")
     cameras_intrinsic_file = os.path.join(datadir, "sparse_/cameras.bin")
     cam_extrinsics = read_extrinsics_binary(cameras_extrinsic_file)
     cam_intrinsics = read_intrinsics_binary(cameras_intrinsic_file)
     from scene.multipleview_dataset import multipleview_dataset
-    train_cam_infos = multipleview_dataset(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, cam_folder=datadir,split="train")
-    test_cam_infos = multipleview_dataset(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, cam_folder=datadir,split="test")
+    # held_out_cams: comma-separated camera ids in any format ("0003", "C0003", "3" all work
+    # -- we strip to digits and compare as int so this doesn't depend on zero-padding width).
+    # Parsed here once and passed to both splits so train/test are mutually exclusive by camera.
+    held_out_cam_ids = [int(''.join(ch for ch in c if ch.isdigit())) for c in held_out_cams.split(",") if c.strip() != ""]
+    if held_out_cam_ids:
+        print(f"[MultipleView] Holding out cameras {held_out_cam_ids} for test; all other cameras used for train.")
+    train_cam_infos = multipleview_dataset(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, cam_folder=datadir,split="train",held_out_cams=held_out_cam_ids)
+    test_cam_infos = multipleview_dataset(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, cam_folder=datadir,split="test",held_out_cams=held_out_cam_ids)
 
     train_cam_infos_ = format_infos(train_cam_infos,"train")
     nerf_normalization = getNerfppNorm(train_cam_infos_)

@@ -61,7 +61,7 @@ class Scene:
         elif (os.path.exists(os.path.join(args.source_path,"points3D_multipleview.ply")) or
               os.path.exists(os.path.join(args.source_path,"points3D_multipleview.bin")) or
               os.path.exists(os.path.join(args.source_path,"points3D_multipleview.txt"))):
-            scene_info = sceneLoadTypeCallbacks["MultipleView"](args.source_path)
+            scene_info = sceneLoadTypeCallbacks["MultipleView"](args.source_path, held_out_cams=getattr(args, "held_out_cams", ""))
             dataset_type="MultipleView"
         else:
             assert False, "Could not recognize scene type!"

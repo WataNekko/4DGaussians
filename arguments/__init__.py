@@ -58,6 +58,7 @@ class ModelParams(ParamGroup):
         self.add_points=False
         self.extension=".png"
         self.llffhold=8
+        self.held_out_cams=""  # comma-separated camera ids for MultipleView holdout, e.g. "0003,0012,0027"
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
@@ -85,6 +86,9 @@ class ModelHiddenParams(ParamGroup):
         self.plane_tv_weight = 0.0001 # TV loss of spatial grid
         self.time_smoothness_weight = 0.01 # TV loss of temporal grid
         self.l1_time_planes = 0.0001  # TV loss of temporal grid
+        self.traj_smooth_weight = 0.0        # explicit per-Gaussian trajectory smoothness (acceleration penalty); 0 disables it
+        self.traj_smooth_dt = 0.02           # time offset for the 3-point finite-difference acceleration estimate
+        self.traj_smooth_sample_size = 20000 # subsample dynamic points per call for speed; None = use all
         self.kplanes_config = {
                              'grid_dimensions': 2,
                              'input_coordinate_dim': 4,
@@ -142,6 +146,10 @@ class OptimizationParams(ParamGroup):
         self.densify_grad_threshold_after = 0.0002
         self.pruning_from_iter = 500
         self.pruning_interval = 100
+        self.min_visibility_count = 0  # confidence-aware pruning; 0 disables it (backward compatible). Try 2-3.
+        self.residual_densify = False       # enable residual-guided densification
+        self.residual_densify_topk = 0.005  # fraction of pixels (highest L1 error) to spawn points from, per event
+        self.residual_densify_max_points = 2000  # cap new points injected per event (memory/runtime safety)
         self.opacity_threshold_coarse = 0.005
         self.opacity_threshold_fine_init = 0.005
         self.opacity_threshold_fine_after = 0.005

@@ -9,8 +9,11 @@ def process_single_image(args):
     src_rgb, src_mask, target_path, scale, apply_mask = args
 
     try:
-        # Load RGB
-        img = Image.open(src_rgb).convert("RGB")
+        # Load as RGBA if masking, otherwise standard RGB
+        if apply_mask and os.path.exists(src_mask):
+            img = Image.open(src_rgb).convert("RGBA")
+        else:
+            img = Image.open(src_rgb).convert("RGB")
 
         # Scale
         if scale > 1:
@@ -19,19 +22,23 @@ def process_single_image(args):
 
         img_np = np.array(img)
 
-        # Mask
+        # Mask - Pre-multiply RGB and inject Alpha
         if apply_mask and os.path.exists(src_mask):
             mask = Image.open(src_mask).convert("L")
             if scale > 1:
                 mask = mask.resize(new_size, Image.NEAREST)
 
-            mask_np = np.array(mask) / 255.0
-            # Pre-multiply with black background
-            img_np = (img_np * mask_np[..., None]).astype(np.uint8)
+            mask_normalized = np.array(mask) / 255.0
+
+            # 1. Multiply the RGB channels (indices 0, 1, 2) by the mask
+            img_np[..., :3] = (img_np[..., :3] * mask_normalized[..., None]).astype(np.uint8)
+
+            # 2. Overwrite the 4th channel (Alpha) with the grayscale mask
+            img_np[..., 3] = np.array(mask)
 
         # Save
         os.makedirs(os.path.dirname(target_path), exist_ok=True)
-        Image.fromarray(img_np).save(target_path, quality=95)
+        Image.fromarray(img_np).save(target_path)
         return True
     except Exception as e:
         return str(e)
@@ -102,8 +109,11 @@ def main():
             # Apply the mapping to the output directory (e.g., cam_01, cam_02)
             target_cam_dir = os.path.join(args.target, f"cam{mapped_cam_id}")
 
-            # Frame indexing remains 1-indexed, starting at frame_00001.jpg
-            target_path = os.path.join(target_cam_dir, f"frame_{frame_idx + 1:05d}.jpg")
+            # NEW: Switch to PNG if we are generating transparency
+            ext = ".png" if args.mask else ".jpg"
+
+            # Frame indexing remains 1-indexed, starting at frame_00001
+            target_path = os.path.join(target_cam_dir, f"frame_{frame_idx + 1:05d}{ext}")
 
             tasks.append((src_rgb, src_mask, target_path, args.scale, args.mask))
 

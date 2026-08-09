@@ -209,7 +209,22 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
 
         psnr_ = psnr(image_tensor, gt_image_tensor).mean().double()
         # norm
+        #gt_rgb_tensor = gt_image_tensor[:,:3,:,:]
         
+        # --- THE MASKED LOSS HACK (BATCHED) ---
+        # 1. Create a binary mask where the GT image is NOT perfectly black
+        # Summing across the RGB channel (dim=1) for batched tensors
+        #fg_mask = (gt_rgb_tensor.sum(dim=1, keepdim=True) > 0.05).float()
+
+        # 2. Black out both the render and the GT outside the mask
+        #image_masked = image_tensor * fg_mask
+        #gt_masked = gt_rgb_tensor * fg_mask
+
+        # 3. Calculate mean L1 loss strictly on the foreground pixels
+        #Ll1 = torch.abs(image_masked - gt_masked).sum() / (fg_mask.sum() * 3 + 1e-5)
+
+        # PSNR tracking via masked images
+        #psnr_ = psnr(image_masked, gt_masked).mean().double()
 
         loss = Ll1
         if stage == "fine" and hyper.time_smoothness_weight != 0:
@@ -221,6 +236,7 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             loss += hyper.traj_smooth_weight * traj_loss
         if opt.lambda_dssim != 0:
             ssim_loss = ssim(image_tensor,gt_image_tensor)
+            #ssim_loss = ssim(image_masked, gt_masked)
             loss += opt.lambda_dssim * (1.0-ssim_loss)
         # if opt.lambda_lpips !=0:
         #     lpipsloss = lpips_loss(image_tensor,gt_image_tensor,lpips_model)

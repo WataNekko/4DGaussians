@@ -4,11 +4,11 @@ workdir=$1
 
 # 1. Extract and match features normally
 python scripts/extractimages.py multipleview/$workdir
-colmap feature_extractor --database_path ./colmap_tmp/database.db --image_path ./colmap_tmp/images --ImageReader.camera_model OPENCV --SiftExtraction.max_image_size 4096 --SiftExtraction.max_num_features 16384 --SiftExtraction.estimate_affine_shape 1 --SiftExtraction.domain_size_pooling 1
+colmap feature_extractor --database_path ./colmap_tmp/database.db --image_path ./colmap_tmp/images --ImageReader.camera_model OPENCV --SiftExtraction.max_image_size 4096 --SiftExtraction.max_num_features 16384 --SiftExtraction.estimate_affine_shape 0 --SiftExtraction.domain_size_pooling 0 || exit $?
 colmap exhaustive_matcher --database_path ./colmap_tmp/database.db
 
 # 2. Convert calibration params files
-python convert_calib.py "${@:2}" -o ./colmap_tmp/sparse_input --db ./colmap_tmp/database.db || exit 2
+python convert_calib.py "${@:2}" -o ./colmap_tmp/sparse_input --db ./colmap_tmp/database.db || exit $?
 
 # 3. Triangulate using KNOWN poses
 mkdir ./colmap_tmp/sparse_output

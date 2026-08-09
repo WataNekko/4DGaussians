@@ -31,7 +31,9 @@ class multipleview_dataset(Dataset):
 
 
     def load_images_path(self, cam_folder, cam_extrinsics,cam_intrinsics,split):
-        image_length = len(os.listdir(os.path.join(cam_folder,"cam01")))
+        images = os.listdir(os.path.join(cam_folder,"cam01"))
+        ext = images[0].split(".")[1]
+        image_length = len(images)
         image_paths=[]
         image_poses=[]
         image_times=[]
@@ -67,7 +69,7 @@ class multipleview_dataset(Dataset):
 
             for i in image_range:
                 num=i+1
-                image_path=os.path.join(images_folder,"frame_"+str(num).zfill(5)+".jpg")
+                image_path=os.path.join(images_folder,f"frame_{str(num).zfill(5)}.{ext}")
                 image_paths.append(image_path)
                 image_poses.append((R,T))
                 image_times.append(float(i/image_length))

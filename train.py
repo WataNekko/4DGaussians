@@ -303,7 +303,7 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
                     
                     gaussians.densify(densify_threshold, opacity_threshold, scene.cameras_extent, size_threshold, 5, 5, scene.model_path, iteration, stage)
 
-                if stage == "fine" and opt.residual_densify and iteration % opt.densification_interval == 0:
+                if iteration > opt.densify_from_iter and stage == "fine" and opt.residual_densify and iteration % opt.densification_interval == 0:
                     with torch.no_grad():
                         # Use the first camera in this batch as the residual-guided
                         # densification source view for this event.
@@ -334,7 +334,7 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
                             new_colors = ref_gt.permute(1, 2, 0).reshape(-1, 3)[topk_idx_valid]
                             gaussians.add_points_from_residual(new_xyz, new_colors)
 
-                if  iteration > opt.pruning_from_iter and iteration % opt.pruning_interval == 0 and gaussians.get_xyz.shape[0]>200000:
+                if  iteration > opt.pruning_from_iter and iteration % opt.pruning_interval == 0:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
                     min_vis = opt.min_visibility_count if opt.min_visibility_count > 0 else None
                     gaussians.prune(densify_threshold, opacity_threshold, scene.cameras_extent, size_threshold, min_vis)

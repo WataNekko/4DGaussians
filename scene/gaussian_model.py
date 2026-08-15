@@ -61,6 +61,8 @@ class GaussianModel:
         self.percent_dense = 0
         self.spatial_lr_scale = 0
         self._deformation_table = torch.empty(0)
+        self.visibility_count = torch.empty(0)
+        self._grace_period = torch.empty(0)
         self.setup_functions()
 
     def capture(self):
@@ -172,6 +174,7 @@ class GaussianModel:
         # is a "visibility during the last pruning_interval" window, comparable across
         # points regardless of when they were created).
         self.visibility_count = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+        self._grace_period = torch.zeros((self.get_xyz.shape[0],), dtype=torch.bool, device="cuda")
         
 
         l = [
@@ -366,9 +369,10 @@ class GaussianModel:
         self._deformation_accum = self._deformation_accum[valid_points_mask]
         self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
         self._deformation_table = self._deformation_table[valid_points_mask]
-        self.visibility_count = self.visibility_count[valid_points_mask]
         self.denom = self.denom[valid_points_mask]
         self.max_radii2D = self.max_radii2D[valid_points_mask]
+        self.visibility_count = self.visibility_count[valid_points_mask]
+        self._grace_period = self._grace_period[valid_points_mask]
 
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
@@ -425,6 +429,9 @@ class GaussianModel:
         # newly added points should start at zero; existing points keep their count.
         new_visibility_count = torch.zeros((new_xyz.shape[0], 1), device="cuda")
         self.visibility_count = torch.cat([self.visibility_count, new_visibility_count], dim=0)
+        new_grace = torch.ones((new_xyz.shape[0],), dtype=torch.bool, device="cuda")
+        # prevent new gaussians to be pruned immediately after, when densification_interval == pruning_interval
+        self._grace_period = torch.cat([self._grace_period, new_grace])
 
     def densify_and_split(self, grads, grad_threshold, scene_extent, N=2):
         n_init_points = self.get_xyz.shape[0]
@@ -551,6 +558,7 @@ class GaussianModel:
         # densify_until_iter window) so confidence is measured over the same window
         # that prune() resets.
         self.visibility_count[visibility_filter] += 1
+        self._grace_period[visibility_filter] = False   # first real sighting exits grace, correctly lands at 1
 
     def compute_trajectory_smoothness_loss(self, dt, sample_size=None):
         """
@@ -610,7 +618,8 @@ class GaussianModel:
             # through, but that was seen by very few distinct training views in the
             # last pruning window, is almost certainly a floater that got planted by
             # gradient-based densification without enough multi-view constraint.
-            low_confidence_mask = self.visibility_count.squeeze(-1) < min_visibility_count
+            vc = self.visibility_count.squeeze(-1)
+            low_confidence_mask = (~self._grace_period) & (vc < min_visibility_count)
             prune_mask = torch.logical_or(prune_mask, low_confidence_mask)
 
         self.prune_points(prune_mask)
@@ -618,6 +627,7 @@ class GaussianModel:
         # otherwise older points would look "more confident" just by having existed
         # longer, rather than by being genuinely well-constrained.
         self.visibility_count = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+        self._grace_period = torch.zeros((self.get_xyz.shape[0],), dtype=torch.bool, device="cuda")  # everyone judged this cycle is no longer "new"
 
         torch.cuda.empty_cache()
     def densify(self, max_grad, min_opacity, extent, max_screen_size, density_threshold, displacement_scale, model_path=None, iteration=None, stage=None):

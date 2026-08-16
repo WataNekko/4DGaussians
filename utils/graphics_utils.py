@@ -89,10 +89,6 @@ def unproject_pixels(camera, pixel_uv, depth):
            pixels -- this is exactly what render_pkg["depth"] gives you per-pixel.
 
     Returns: (N, 3) tensor of world-space xyz.
-
-    NOTE: assumes a centered principal point (cx = W/2, cy = H/2), matching how
-    this repo builds its projection matrix. If your COLMAP intrinsics have a
-    non-centered principal point, pull cx/cy from cam_intrinsics instead.
     """
     device = depth.device
     W, H = camera.image_width, camera.image_height

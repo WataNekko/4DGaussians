@@ -5,7 +5,8 @@ python prepare_data.py -i /data/schulz/bonn_tele_bench_001 -o ./data/multiplevie
 ./multipleviewtria.sh vci/b1_s4 -i /data/schulz/bonn_tele_bench_001/calibration_dome.json -s4 &&
 (
 export DATA=multipleview/vci/b1_s4
-export OUT=vci/b1_s4/v3_full
+export OUT=vci/b1_s4/v3
+export NAME="baseline conf_only resid_only traj_only combined"
 export ARG=multipleview/vci
 export ITER="7000 14000 20000"
 vci/train.sh &&
@@ -19,6 +20,7 @@ python prepare_data.py -i /data/schulz/bonn_tele_bench_002 -o ./data/multiplevie
 (
 export DATA=multipleview/vci/b2_s4
 export OUT=vci/b2_s4/v3
+export NAME="baseline conf_only resid_only traj_only combined"
 export ARG=multipleview/vci
 export ITER="7000 14000 20000"
 vci/train.sh &&
@@ -32,6 +34,7 @@ python prepare_data.py -i /data/schulz/bonn_tele_bench_001 -o ./data/multiplevie
 (
 export DATA=multipleview/vci/b1
 export OUT=vci/b1/v3
+export NAME="baseline conf_only resid_only traj_only combined"
 export ARG=multipleview/vci
 export ITER="7000 14000 20000"
 vci/train.sh &&
